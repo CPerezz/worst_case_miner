@@ -1,6 +1,6 @@
 // CUDA-accelerated mining module
-use std::sync::{Arc, Mutex};
 use log::info;
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
 extern "C" {
@@ -32,7 +32,10 @@ pub fn mine_with_cuda(
     let threads_per_block = 256;
     let attempts_per_thread = 100000;
 
-    info!("Mining with CUDA: {} blocks, {} threads/block", blocks, threads_per_block);
+    info!(
+        "Mining with CUDA: {} blocks, {} threads/block",
+        blocks, threads_per_block
+    );
 
     unsafe {
         cuda_mine_storage_slot(
