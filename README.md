@@ -51,22 +51,31 @@ Mine storage slots to create a storage branch of specified depth:
 Mine CREATE2 addresses with auxiliary accounts for account trie depth:
 
 ```bash
-# Mine 1000 contracts at depth 5
+# Mine with a Solidity file (auto-compiles)
 ./target/release/worst_case_miner create2 \
-    --deployer 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 \
-    --init-code contracts/WorstCaseERC20.sol \
-    --num-contracts 1000 \
     --depth 5 \
-    --output create2_1000_depth5.json
-
-# Mine 15000 contracts at depth 8 (takes longer)
-./target/release/worst_case_miner create2 \
+    --num-contracts 1000 \
     --deployer 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 \
-    --init-code contracts/WorstCaseERC20.sol \
-    --num-contracts 15000 \
-    --depth 8 \
-    --output create2_15k_depth8.json
+    --init-code WorstCaseERC20.sol \
+    --accounts-output create2_1000_depth5.json
+
+# Mine with pre-compiled bytecode
+./target/release/worst_case_miner create2 \
+    --depth 5 \
+    --num-contracts 1000 \
+    --deployer 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 \
+    --init-code bytecode.hex \
+    --accounts-output create2_1000_depth5.json
+
+# Auto-generate contract and mine (no init-code needed)
+./target/release/worst_case_miner create2 \
+    --depth 5 \
+    --num-contracts 1000 \
+    --deployer 0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266 \
+    --accounts-output create2_1000_depth5.json
 ```
+
+The tool automatically compiles Solidity files with `--metadata-hash none` to ensure consistent bytecode generation.
 
 ### Contract Generation from Template
 

@@ -1,5 +1,6 @@
 use clap::Parser;
 use log::info;
+use std::process::Command;
 use std::time::Instant;
 
 mod account_miner;
@@ -78,13 +79,43 @@ fn main() {
             [0u8; 20] // Default to zero address
         };
 
-        // Load init code if provided, otherwise use default
+        // Load or generate init code
         let init_code = if let Some(init_code_path) = args.init_code {
-            std::fs::read(&init_code_path).expect("Failed to read init code file")
+            // Check if it's a .sol file or a hex file
+            if init_code_path.ends_with(".sol") {
+                // Compile the Solidity file to get bytecode
+                info!("Compiling Solidity contract: {}", init_code_path);
+                compile_solidity_to_bytecode(&init_code_path)
+                    .expect("Failed to compile Solidity contract")
+            } else if init_code_path.ends_with(".hex") || init_code_path.ends_with(".bin") {
+                // Read hex bytecode from file
+                info!("Loading bytecode from: {}", init_code_path);
+                let hex_content = std::fs::read_to_string(&init_code_path)
+                    .expect("Failed to read bytecode file");
+                let hex_content = hex_content.trim();
+                let hex_content = hex_content.strip_prefix("0x").unwrap_or(hex_content);
+                hex::decode(hex_content).expect("Invalid hex in bytecode file")
+            } else {
+                // Assume it's raw bytecode
+                std::fs::read(&init_code_path).expect("Failed to read init code file")
+            }
+        } else if args.depth > 0 {
+            // No init code provided but depth specified - generate and compile a contract with the specified depth
+            info!("No init code provided. Generating contract with depth {}...", args.depth);
+
+            // First, mine storage slots for the contract
+            let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
+
+            // Generate the contract
+            storage_miner::generate_contract(&branch);
+
+            // Compile the generated contract
+            let contract_path = "contracts/WorstCaseERC20.sol";
+            info!("Compiling generated contract: {}", contract_path);
+            compile_solidity_to_bytecode(contract_path)
+                .expect("Failed to compile generated contract")
         } else {
-            // Default: use a simple contract bytecode (can be the compiled WorstCaseERC20)
-            // For now, use a placeholder
-            vec![0x60, 0x80, 0x60, 0x40, 0x52] // Basic bytecode prefix
+            panic!("For CREATE2 mining, either provide --init-code or specify --depth to auto-generate a contract");
         };
 
         account_miner::mine_create2_accounts(
@@ -95,6 +126,9 @@ fn main() {
             &init_code,
             &args.accounts_output,
         );
+
+        // Exit after CREATE2 mining - don't continue to storage mining
+        return;
     }
 
     let start_time = Instant::now();
@@ -112,6 +146,40 @@ fn main() {
 }
 
 /// Parse hex address string to bytes
+fn compile_solidity_to_bytecode(sol_path: &str) -> Result<Vec<u8>, String> {
+    // Run solc to compile the contract with consistent metadata settings
+    let output = Command::new("solc")
+        .args(&["--optimize", "--optimize-runs", "200", "--bin", "--metadata-hash", "none", sol_path])
+        .output()
+        .map_err(|e| format!("Failed to run solc: {}. Make sure solc is installed.", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Solidity compilation failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Find the binary output (it comes after "Binary:" line)
+    let lines: Vec<&str> = stdout.lines().collect();
+    let mut found_binary = false;
+    for line in lines {
+        if found_binary {
+            // This is the bytecode line
+            let bytecode_hex = line.trim();
+            if !bytecode_hex.is_empty() {
+                return hex::decode(bytecode_hex)
+                    .map_err(|e| format!("Failed to decode bytecode hex: {}", e));
+            }
+        }
+        if line.contains("Binary:") {
+            found_binary = true;
+        }
+    }
+
+    Err("Could not find bytecode in solc output".to_string())
+}
+
 fn parse_address(hex_str: &str) -> Result<[u8; 20], String> {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
 
