@@ -54,37 +54,6 @@ fn main() {
     {
         if args.cuda && cuda_miner::cuda_available() {
             info!("Using CUDA acceleration");
-
-            // Verify CUDA keccak matches CPU
-            let test_addr: [u8; 20] = [
-                0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22,
-                0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
-            ];
-            let cpu_result = storage_miner::calculate_storage_slot(&test_addr, 0);
-            let cuda_result = cuda_miner::verify_cuda_keccak(&test_addr, 0);
-
-            if cpu_result == cuda_result {
-                info!("CUDA keccak verification PASSED");
-
-                // Also verify that CUDA PRNG generates valid addresses/keys
-                let (prng_addr, prng_key) = cuda_miner::debug_cuda_prng(12345, 0);
-                let cpu_key_for_prng_addr = storage_miner::calculate_storage_slot(&prng_addr, 0);
-                if prng_key == cpu_key_for_prng_addr {
-                    info!("CUDA PRNG verification PASSED");
-                    info!("  Sample address: 0x{}", hex::encode(&prng_addr));
-                    info!("  Sample key:     0x{}", hex::encode(&prng_key[..8]));
-                } else {
-                    log::error!("CUDA PRNG verification FAILED!");
-                    log::error!("  Address: 0x{}", hex::encode(&prng_addr));
-                    log::error!("  CUDA key: 0x{}", hex::encode(&prng_key));
-                    log::error!("  CPU key:  0x{}", hex::encode(&cpu_key_for_prng_addr));
-                }
-            } else {
-                log::error!("CUDA keccak verification FAILED!");
-                log::error!("CPU:  0x{}", hex::encode(&cpu_result));
-                log::error!("CUDA: 0x{}", hex::encode(&cuda_result));
-                log::error!("Disabling CUDA, falling back to CPU");
-            }
         } else if args.cuda {
             info!("CUDA requested but not available, falling back to CPU");
             info!("Using {} CPU threads", args.threads);

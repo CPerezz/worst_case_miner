@@ -2,7 +2,7 @@
 use log::info;
 
 #[cfg(feature = "cuda")]
-extern "C" {
+unsafe extern "C" {
     fn cuda_mine_storage_slot(
         target_prefix: *const u8,
         required_nibbles: i32,
@@ -163,5 +163,68 @@ pub fn cuda_available() -> bool {
     #[cfg(not(feature = "cuda"))]
     {
         false
+    }
+}
+
+#[cfg(all(test, feature = "cuda"))]
+mod tests {
+    use super::*;
+    use crate::storage_miner::calculate_storage_slot;
+
+    /// Verify CUDA keccak implementation matches CPU implementation
+    #[test]
+    fn test_cuda_keccak_matches_cpu() {
+        let test_addr: [u8; 20] = [
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22,
+            0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+        ];
+
+        let cpu_result = calculate_storage_slot(&test_addr, 0);
+        let cuda_result = verify_cuda_keccak(&test_addr, 0);
+
+        assert_eq!(
+            cpu_result, cuda_result,
+            "CUDA keccak mismatch!\nCPU:  0x{}\nCUDA: 0x{}",
+            hex::encode(&cpu_result),
+            hex::encode(&cuda_result)
+        );
+    }
+
+    /// Verify CUDA PRNG generates addresses that produce correct storage keys
+    #[test]
+    fn test_cuda_prng_produces_valid_keys() {
+        // Test multiple seeds to ensure consistency
+        for seed in [0u64, 1, 12345, 999999, u64::MAX - 1] {
+            let (prng_addr, cuda_key) = debug_cuda_prng(seed, 0);
+            let cpu_key = calculate_storage_slot(&prng_addr, 0);
+
+            assert_eq!(
+                cuda_key, cpu_key,
+                "CUDA PRNG key mismatch for seed {}!\nAddress: 0x{}\nCUDA key: 0x{}\nCPU key:  0x{}",
+                seed,
+                hex::encode(&prng_addr),
+                hex::encode(&cuda_key),
+                hex::encode(&cpu_key)
+            );
+        }
+    }
+
+    /// Verify CUDA keccak works with different base slots
+    #[test]
+    fn test_cuda_keccak_different_slots() {
+        let test_addr: [u8; 20] = [0xaa; 20];
+
+        for slot in [0u64, 1, 2, 100, u64::MAX] {
+            let cpu_result = calculate_storage_slot(&test_addr, slot);
+            let cuda_result = verify_cuda_keccak(&test_addr, slot);
+
+            assert_eq!(
+                cpu_result, cuda_result,
+                "CUDA keccak mismatch for slot {}!\nCPU:  0x{}\nCUDA: 0x{}",
+                slot,
+                hex::encode(&cpu_result),
+                hex::encode(&cuda_result)
+            );
+        }
     }
 }
