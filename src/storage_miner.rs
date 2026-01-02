@@ -11,8 +11,8 @@
 
 use askama::Template;
 use log::{debug, info};
-use rand::Rng;
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -93,9 +93,8 @@ pub fn mine_deep_branch(
         // Mine for an address at this depth level
         let address = if current_depth == 0 {
             // First address can be anything - just generate a random one
-            let mut rng = rand::thread_rng();
             let mut addr = [0u8; 20];
-            rng.fill(&mut addr);
+            fastrand::fill(&mut addr);
             addr
         } else {
             // Need to find an address that shares the required prefix with the PREVIOUS level
@@ -169,7 +168,7 @@ fn mine_address_for_prefix(
         }
     }
     let result = Arc::new(Mutex::new(None));
-    let found = Arc::new(Mutex::new(false));
+    let found = Arc::new(AtomicBool::new(false));
 
     let handles: Vec<_> = (0..num_threads)
         .map(|thread_id| {
@@ -201,9 +200,10 @@ fn mine_worker_for_prefix(
     target_prefix: &[u8; 32],
     required_nibbles: usize,
     result: Arc<Mutex<Option<[u8; 20]>>>,
-    found: Arc<Mutex<bool>>,
+    found: Arc<AtomicBool>,
 ) {
-    let mut rng = rand::thread_rng();
+    // Use fastrand for faster non-crypto PRNG
+    let mut rng = fastrand::Rng::new();
     let mut attempts = 0u64;
 
     // Pre-compute the slot bytes since they don't change
@@ -215,7 +215,8 @@ fn mine_worker_for_prefix(
 
     loop {
         // Check if another thread found a result (but only every BATCH_SIZE attempts)
-        if attempts % BATCH_SIZE == 0 && *found.lock().unwrap() {
+        // Using Relaxed ordering - sufficient for a stop flag, no synchronization needed
+        if attempts % BATCH_SIZE == 0 && found.load(Ordering::Relaxed) {
             break;
         }
 
@@ -228,7 +229,7 @@ fn mine_worker_for_prefix(
             );
         }
 
-        // Generate a random address
+        // Generate a random address using fastrand
         let mut address = [0u8; 20];
         rng.fill(&mut address);
 
@@ -248,9 +249,11 @@ fn mine_worker_for_prefix(
 
         // Check if it matches the required prefix
         if has_nibble_prefix(&storage_key, target_prefix, required_nibbles) {
-            let mut found_lock = found.lock().unwrap();
-            if !*found_lock {
-                *found_lock = true;
+            // Use compare_exchange for atomic flag setting
+            if found
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
                 let mut result_lock = result.lock().unwrap();
                 *result_lock = Some(address);
                 info!("Thread {thread_id} found matching address after {attempts} attempts");

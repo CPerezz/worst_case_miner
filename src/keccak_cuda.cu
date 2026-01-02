@@ -3,6 +3,17 @@
 
 #include <cuda_runtime.h>
 #include <stdint.h>
+#include <stdio.h>
+
+// xorshift64* PRNG - better statistical properties than LCG
+__device__ inline uint64_t xorshift64star(uint64_t* state) {
+    uint64_t x = *state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    *state = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
 
 // Keccak round constants
 __constant__ uint64_t keccak_round_constants[24] = {
@@ -18,15 +29,6 @@ __constant__ uint64_t keccak_round_constants[24] = {
     0x000000000000800aULL, 0x800000008000000aULL,
     0x8000000080008081ULL, 0x8000000000008080ULL,
     0x0000000080000001ULL, 0x8000000080008008ULL
-};
-
-// Rotation offsets
-__constant__ int rho_offsets[24] = {
-     1,  3,  6, 10, 15, 21,
-     8, 24, 18,  2, 14,
-    11, 22, 20, 12,
-    19, 23,  5, 14,
-    13, 25,  8, 23
 };
 
 // 64-bit rotate left
@@ -60,13 +62,33 @@ __device__ void keccak_f1600(uint64_t state[25]) {
             }
         }
 
-        // Rho and Pi
-        B[0] = state[0];
-        #pragma unroll
-        for (int i = 0; i < 24; i++) {
-            int pi_idx = (2 * i + 3 * (i / 5)) % 5 + 5 * (i % 5);
-            B[pi_idx] = rotl64(state[i + 1], rho_offsets[i]);
-        }
+        // Rho and Pi - hard-coded for immediate rotate values
+        // Eliminates constant memory lookups and index computation
+        B[0]  = state[0];
+        B[10] = rotl64(state[1],  1);
+        B[20] = rotl64(state[2], 62);
+        B[5]  = rotl64(state[3], 28);
+        B[15] = rotl64(state[4], 27);
+        B[16] = rotl64(state[5], 36);
+        B[1]  = rotl64(state[6], 44);
+        B[11] = rotl64(state[7],  6);
+        B[21] = rotl64(state[8], 55);
+        B[6]  = rotl64(state[9], 20);
+        B[7]  = rotl64(state[10], 3);
+        B[17] = rotl64(state[11],10);
+        B[2]  = rotl64(state[12],43);
+        B[12] = rotl64(state[13],25);
+        B[22] = rotl64(state[14],39);
+        B[23] = rotl64(state[15],41);
+        B[8]  = rotl64(state[16],45);
+        B[18] = rotl64(state[17],15);
+        B[3]  = rotl64(state[18],21);
+        B[13] = rotl64(state[19], 8);
+        B[14] = rotl64(state[20],18);
+        B[24] = rotl64(state[21], 2);
+        B[9]  = rotl64(state[22],61);
+        B[19] = rotl64(state[23],56);
+        B[4]  = rotl64(state[24],14);
 
         // Chi
         #pragma unroll
@@ -128,11 +150,28 @@ __device__ void calculate_storage_slot(uint8_t address[20], uint64_t base_slot, 
 }
 
 // Check if two byte arrays share a prefix of n nibbles
+// Optimized with early rejection using word-level comparisons
 __device__ bool check_nibble_prefix(const uint8_t* a, const uint8_t* b, int nibbles) {
     int full_bytes = nibbles / 2;
     bool has_half = (nibbles % 2) == 1;
 
-    for (int i = 0; i < full_bytes; i++) {
+    // Fast path: compare first 4 bytes as uint32 if we need 8+ nibbles
+    if (nibbles >= 8) {
+        if (*(const uint32_t*)a != *(const uint32_t*)b) return false;
+        // If we need exactly 8 nibbles, we're done
+        if (nibbles == 8) return true;
+    }
+
+    // Fast path: compare first 8 bytes as uint64 if we need 16+ nibbles
+    if (nibbles >= 16) {
+        if (*(const uint64_t*)a != *(const uint64_t*)b) return false;
+        // If we need exactly 16 nibbles, we're done
+        if (nibbles == 16) return true;
+    }
+
+    // Handle remaining bytes
+    int start_byte = (nibbles >= 16) ? 8 : ((nibbles >= 8) ? 4 : 0);
+    for (int i = start_byte; i < full_bytes; i++) {
         if (a[i] != b[i]) return false;
     }
 
@@ -162,13 +201,16 @@ __global__ void mine_storage_slots(
         uint8_t address[20];
         uint8_t storage_key[32];
 
-        // Generate pseudo-random address from nonce
-        uint64_t seed = nonce + attempt;
+        // Generate pseudo-random address using xorshift64*
+        // Initialize state with nonce+attempt, ensuring it's never 0
+        uint64_t state = nonce + attempt + 1;
         #pragma unroll
-        for (int i = 0; i < 20; i++) {
-            // Simple PRNG using nonce
-            seed = seed * 1103515245ULL + 12345ULL;
-            address[i] = (seed >> 16) & 0xFF;
+        for (int i = 0; i < 20; i += 8) {
+            uint64_t rand = xorshift64star(&state);
+            // Extract up to 8 bytes from the 64-bit random number
+            for (int j = 0; j < 8 && (i + j) < 20; j++) {
+                address[i + j] = (rand >> (j * 8)) & 0xFF;
+            }
         }
 
         // Calculate storage slot
@@ -192,6 +234,98 @@ __global__ void mine_storage_slots(
     }
 }
 
+// Verification function to test CUDA keccak against CPU
+extern "C" {
+    void cuda_verify_keccak(
+        uint8_t* test_address,  // 20 bytes
+        uint64_t base_slot,
+        uint8_t* result_storage_key  // 32 bytes output
+    ) {
+        uint8_t *d_addr, *d_result;
+        cudaMalloc(&d_addr, 20);
+        cudaMalloc(&d_result, 32);
+        cudaMemcpy(d_addr, test_address, 20, cudaMemcpyHostToDevice);
+
+        // Launch single-thread kernel to compute storage slot
+        extern __global__ void verify_keccak_kernel(uint8_t* addr, uint64_t slot, uint8_t* result);
+        verify_keccak_kernel<<<1, 1>>>(d_addr, base_slot, d_result);
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(result_storage_key, d_result, 32, cudaMemcpyDeviceToHost);
+        cudaFree(d_addr);
+        cudaFree(d_result);
+    }
+
+    // Debug function to get a generated address and its storage key from the PRNG
+    void cuda_debug_prng(
+        uint64_t seed,
+        uint64_t base_slot,
+        uint8_t* result_address,     // 20 bytes output
+        uint8_t* result_storage_key  // 32 bytes output
+    ) {
+        uint8_t *d_addr, *d_key;
+        cudaMalloc(&d_addr, 20);
+        cudaMalloc(&d_key, 32);
+
+        extern __global__ void debug_prng_kernel(uint64_t seed, uint64_t slot, uint8_t* addr, uint8_t* key);
+        debug_prng_kernel<<<1, 1>>>(seed, base_slot, d_addr, d_key);
+        cudaDeviceSynchronize();
+
+        cudaMemcpy(result_address, d_addr, 20, cudaMemcpyDeviceToHost);
+        cudaMemcpy(result_storage_key, d_key, 32, cudaMemcpyDeviceToHost);
+        cudaFree(d_addr);
+        cudaFree(d_key);
+    }
+}
+
+__global__ void verify_keccak_kernel(uint8_t* addr, uint64_t slot, uint8_t* result) {
+    uint8_t address[20];
+    uint8_t storage_key[32];
+    for (int i = 0; i < 20; i++) address[i] = addr[i];
+    calculate_storage_slot(address, slot, storage_key);
+    for (int i = 0; i < 32; i++) result[i] = storage_key[i];
+}
+
+__global__ void debug_prng_kernel(uint64_t seed, uint64_t slot, uint8_t* result_addr, uint8_t* result_key) {
+    uint8_t address[20];
+    uint8_t storage_key[32];
+
+    // Generate address using same PRNG as mining kernel (xorshift64*)
+    uint64_t state = seed + 1;  // Ensure never 0
+    for (int i = 0; i < 20; i += 8) {
+        uint64_t rand = xorshift64star(&state);
+        for (int j = 0; j < 8 && (i + j) < 20; j++) {
+            address[i + j] = (rand >> (j * 8)) & 0xFF;
+        }
+    }
+
+    calculate_storage_slot(address, slot, storage_key);
+
+    for (int i = 0; i < 20; i++) result_addr[i] = address[i];
+    for (int i = 0; i < 32; i++) result_key[i] = storage_key[i];
+}
+
+// Helper macro for CUDA error checking
+#define CUDA_CHECK(call) do { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        fprintf(stderr, "CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        *found = false; \
+        return; \
+    } \
+} while(0)
+
+// Get SM count for optimal grid sizing
+extern "C" {
+    int cuda_get_sm_count() {
+        int device;
+        cudaGetDevice(&device);
+        int sm_count;
+        cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, device);
+        return sm_count;
+    }
+}
+
 // C interface for Rust FFI
 extern "C" {
     void cuda_mine_storage_slot(
@@ -203,43 +337,47 @@ extern "C" {
         bool* found,
         int blocks,
         int threads_per_block,
-        uint64_t attempts_per_thread
+        uint64_t attempts_per_thread,
+        uint64_t start_nonce
     ) {
         // Allocate device memory
         uint8_t *d_target, *d_result_addr, *d_result_key;
         int *d_found;
 
-        cudaMalloc(&d_target, 32);
-        cudaMalloc(&d_result_addr, 20);
-        cudaMalloc(&d_result_key, 32);
-        cudaMalloc(&d_found, sizeof(int));
+        CUDA_CHECK(cudaMalloc(&d_target, 32));
+        CUDA_CHECK(cudaMalloc(&d_result_addr, 20));
+        CUDA_CHECK(cudaMalloc(&d_result_key, 32));
+        CUDA_CHECK(cudaMalloc(&d_found, sizeof(int)));
 
         // Copy input to device
-        cudaMemcpy(d_target, target_prefix, 32, cudaMemcpyHostToDevice);
-        cudaMemset(d_found, 0, sizeof(int));
+        CUDA_CHECK(cudaMemcpy(d_target, target_prefix, 32, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(d_found, 0, sizeof(int)));
 
         // Launch kernel
         mine_storage_slots<<<blocks, threads_per_block>>>(
             d_target,
             required_nibbles,
             base_slot,
-            0, // start_nonce
+            start_nonce,
             attempts_per_thread,
             d_result_addr,
             d_result_key,
             d_found
         );
 
+        // Check for launch errors
+        CUDA_CHECK(cudaGetLastError());
+
         // Wait for completion
-        cudaDeviceSynchronize();
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         // Copy results back
         int found_flag;
-        cudaMemcpy(&found_flag, d_found, sizeof(int), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&found_flag, d_found, sizeof(int), cudaMemcpyDeviceToHost));
 
         if (found_flag) {
-            cudaMemcpy(result_address, d_result_addr, 20, cudaMemcpyDeviceToHost);
-            cudaMemcpy(result_storage_key, d_result_key, 32, cudaMemcpyDeviceToHost);
+            CUDA_CHECK(cudaMemcpy(result_address, d_result_addr, 20, cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(result_storage_key, d_result_key, 32, cudaMemcpyDeviceToHost));
             *found = true;
         } else {
             *found = false;
