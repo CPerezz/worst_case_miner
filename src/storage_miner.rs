@@ -192,8 +192,7 @@ fn mine_address_for_prefix(
         handle.join().unwrap();
     }
 
-    let found_address = *result.lock().unwrap();
-    found_address
+    *result.lock().unwrap()
 }
 
 fn mine_worker_for_prefix(

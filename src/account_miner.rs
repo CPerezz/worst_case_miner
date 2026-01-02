@@ -222,8 +222,7 @@ fn mine_account_with_hash_prefix(
         handle.join().unwrap();
     }
 
-    let found_address = result.lock().unwrap().expect("Failed to find account");
-    found_address
+    result.lock().unwrap().expect("Failed to find account")
 }
 
 /// Worker thread for hash-based mining

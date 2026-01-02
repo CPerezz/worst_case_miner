@@ -149,7 +149,7 @@ fn main() {
 fn compile_solidity_to_bytecode(sol_path: &str) -> Result<Vec<u8>, String> {
     // Run solc to compile the contract with consistent metadata settings
     let output = Command::new("solc")
-        .args(&["--optimize", "--optimize-runs", "200", "--bin", "--metadata-hash", "none", sol_path])
+        .args(["--optimize", "--optimize-runs", "200", "--bin", "--metadata-hash", "none", sol_path])
         .output()
         .map_err(|e| format!("Failed to run solc: {}. Make sure solc is installed.", e))?;
 
