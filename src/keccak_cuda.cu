@@ -150,32 +150,21 @@ __device__ void calculate_storage_slot(uint8_t address[20], uint64_t base_slot, 
 }
 
 // Check if two byte arrays share a prefix of n nibbles
-// Optimized with early rejection using word-level comparisons
+// Simple byte-by-byte comparison for correctness
 __device__ bool check_nibble_prefix(const uint8_t* a, const uint8_t* b, int nibbles) {
+    if (nibbles <= 0) return true;
+
     int full_bytes = nibbles / 2;
     bool has_half = (nibbles % 2) == 1;
 
-    // Fast path: compare first 4 bytes as uint32 if we need 8+ nibbles
-    if (nibbles >= 8) {
-        if (*(const uint32_t*)a != *(const uint32_t*)b) return false;
-        // If we need exactly 8 nibbles, we're done
-        if (nibbles == 8) return true;
-    }
-
-    // Fast path: compare first 8 bytes as uint64 if we need 16+ nibbles
-    if (nibbles >= 16) {
-        if (*(const uint64_t*)a != *(const uint64_t*)b) return false;
-        // If we need exactly 16 nibbles, we're done
-        if (nibbles == 16) return true;
-    }
-
-    // Handle remaining bytes
-    int start_byte = (nibbles >= 16) ? 8 : ((nibbles >= 8) ? 4 : 0);
-    for (int i = start_byte; i < full_bytes; i++) {
+    // Compare full bytes one by one
+    // This is simple and correct - CUDA's memory coalescing handles performance
+    for (int i = 0; i < full_bytes; i++) {
         if (a[i] != b[i]) return false;
     }
 
-    if (has_half && full_bytes < 32) {
+    // Check the final half-byte (high nibble) if needed
+    if (has_half) {
         if ((a[full_bytes] & 0xF0) != (b[full_bytes] & 0xF0)) return false;
     }
 

@@ -1,5 +1,8 @@
 // CUDA-accelerated mining module
-use log::info;
+use log::{info, warn};
+
+#[cfg(feature = "cuda")]
+use crate::storage_miner::{calculate_storage_slot, has_nibble_prefix};
 
 #[cfg(feature = "cuda")]
 unsafe extern "C" {
@@ -45,18 +48,22 @@ pub fn mine_with_cuda(
         8 => 10_000_000,
         9 => 50_000_000,
         10 => 100_000_000,
-        _ => 200_000_000,
+        11 => 200_000_000,
+        12 => 500_000_000,
+        _ => 1_000_000_000,
     };
 
     // Calculate max iterations to attempt before giving up
     // For very high nibble counts, we may need multiple kernel launches
+    // Each nibble requires 16x more work on average
     let max_iterations = match required_nibbles {
         0..=7 => 1,
         8 => 5,
         9 => 20,
         10 => 50,
         11 => 100,
-        _ => 200,
+        12 => 500,
+        _ => 2000,
     };
 
     let total_attempts_per_iteration = blocks as u64 * threads_per_block as u64 * attempts_per_thread;
@@ -100,10 +107,23 @@ pub fn mine_with_cuda(
         }
 
         if found {
+            // Verify the result using CPU to catch any CUDA false positives
+            let cpu_storage_key = calculate_storage_slot(&result_address, base_slot);
+            if !has_nibble_prefix(&cpu_storage_key, target_prefix, required_nibbles) {
+                warn!(
+                    "CUDA returned false positive! Address 0x{} does not match {} nibbles. Continuing search...",
+                    hex::encode(&result_address),
+                    required_nibbles
+                );
+                // Reset found flag and continue searching
+                found = false;
+                continue;
+            }
+
             if iteration > 0 {
                 info!("CUDA found match on iteration {}", iteration + 1);
             }
-            return Some((result_address, result_storage_key));
+            return Some((result_address, cpu_storage_key));
         }
     }
 
