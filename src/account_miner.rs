@@ -23,6 +23,9 @@ use tiny_keccak::{Hasher, Keccak};
 pub struct Create2MiningResult {
     pub deployer: String,
     pub init_code_hash: String,
+    pub init_code: String,
+    pub deploy_code: String,
+    pub storage_keys: Vec<String>,
     pub target_depth: usize,
     pub num_contracts: usize,
     pub total_time: f64,
@@ -44,6 +47,8 @@ pub fn mine_create2_accounts(
     target_depth: usize,
     num_threads: usize,
     init_code: &[u8],
+    deploy_code: &[u8],
+    storage_keys: &[[u8; 20]],
     output_path: &str,
 ) {
     info!("");
@@ -101,6 +106,12 @@ pub fn mine_create2_accounts(
     let result = Create2MiningResult {
         deployer: format!("0x{}", hex::encode(deployer)),
         init_code_hash: format!("0x{}", hex::encode(init_code_hash)),
+        init_code: format!("0x{}", hex::encode(init_code)),
+        deploy_code: format!("0x{}", hex::encode(deploy_code)),
+        storage_keys: storage_keys
+            .iter()
+            .map(|k| format!("0x{}", hex::encode(k)))
+            .collect(),
         target_depth,
         num_contracts,
         total_time,
