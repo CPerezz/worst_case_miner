@@ -116,8 +116,15 @@ Generate a Solidity contract with mined storage slots:
 ### CREATE2 Mining Output
 ```json
 {
-  "deployer": "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
-  "init_code_hash": "0x1c3374235d773b2189aed115aa13143020fcdbbe86e38f358cf3e4771b2f0244",
+  "deployer": "0x4e59b44847b379578588920ca78fbf26c0b4956c",
+  "init_code_hash": "0x90cb4a8e859fd7f27af7ea59371ffb7408be139c0e33e1436b3b2e7f3a086c4d",
+  "init_code": "0x608060405234801561000f575f5ffd5b50...",
+  "deploy_code": "0x608060405234801561000f575f5ffd5b50...",
+  "storage_keys": [
+    "0xc23303a7ec42f89ca5bf674b83a9141500ac18f0",
+    "0xc5f82341cec8f50dcc8cad69423974ca8ada0f20",
+    "0xed37894a02b4d0a25ea01b6e631a3915613f1bb5"
+  ],
   "target_depth": 5,
   "num_contracts": 1000,
   "total_time": 20.328,
@@ -136,6 +143,11 @@ Generate a Solidity contract with mined storage slots:
   ]
 }
 ```
+
+**Output Fields:**
+- `init_code`: Full deployment bytecode (constructor + runtime) - used for CREATE2 address calculation
+- `deploy_code`: Runtime bytecode only - what ends up stored on-chain after deployment
+- `storage_keys`: The mined storage slot addresses that create the deep storage trie branch (only populated when using `--depth` without `--init-code`)
 
 
 ## Technical Details
