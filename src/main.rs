@@ -79,51 +79,81 @@ fn main() {
             [0u8; 20] // Default to zero address
         };
 
-        // Load or generate init code
-        let init_code = if let Some(init_code_path) = args.init_code {
-            // Check if it's a .sol file or a hex file
-            if init_code_path.ends_with(".sol") {
-                // Compile the Solidity file to get bytecode
-                info!("Compiling Solidity contract: {}", init_code_path);
-                compile_solidity_to_bytecode(&init_code_path)
-                    .expect("Failed to compile Solidity contract")
-            } else if init_code_path.ends_with(".hex") || init_code_path.ends_with(".bin") {
-                // Read hex bytecode from file
-                info!("Loading bytecode from: {}", init_code_path);
-                let hex_content = std::fs::read_to_string(&init_code_path)
-                    .expect("Failed to read bytecode file");
-                let hex_content = hex_content.trim();
-                let hex_content = hex_content.strip_prefix("0x").unwrap_or(hex_content);
-                hex::decode(hex_content).expect("Invalid hex in bytecode file")
+        // Load or generate init code, deploy code, and storage keys
+        let (compiled, storage_keys): (CompiledContract, Vec<[u8; 20]>) =
+            if let Some(init_code_path) = args.init_code {
+                // Check if it's a .sol file or a hex file
+                if init_code_path.ends_with(".sol") {
+                    // Compile the Solidity file to get bytecode
+                    info!("Compiling Solidity contract: {}", init_code_path);
+                    let compiled =
+                        compile_solidity(&init_code_path).expect("Failed to compile Solidity contract");
+                    // When loading from external .sol file, we don't have storage keys
+                    (compiled, Vec::new())
+                } else if init_code_path.ends_with(".hex") || init_code_path.ends_with(".bin") {
+                    // Read hex bytecode from file
+                    info!("Loading bytecode from: {}", init_code_path);
+                    let hex_content = std::fs::read_to_string(&init_code_path)
+                        .expect("Failed to read bytecode file");
+                    let hex_content = hex_content.trim();
+                    let hex_content = hex_content.strip_prefix("0x").unwrap_or(hex_content);
+                    let init_code = hex::decode(hex_content).expect("Invalid hex in bytecode file");
+                    // For raw bytecode, we don't have deploy_code or storage_keys
+                    (
+                        CompiledContract {
+                            init_code,
+                            deploy_code: Vec::new(),
+                        },
+                        Vec::new(),
+                    )
+                } else {
+                    // Assume it's raw bytecode
+                    let init_code = std::fs::read(&init_code_path).expect("Failed to read init code file");
+                    (
+                        CompiledContract {
+                            init_code,
+                            deploy_code: Vec::new(),
+                        },
+                        Vec::new(),
+                    )
+                }
+            } else if args.depth > 0 {
+                // No init code provided but depth specified - generate and compile a contract with the specified depth
+                info!(
+                    "No init code provided. Generating contract with depth {}...",
+                    args.depth
+                );
+
+                // First, mine storage slots for the contract
+                let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
+
+                // Extract storage keys (addresses) from the mined branch
+                let storage_keys: Vec<[u8; 20]> = branch.iter().map(|slot| slot.address).collect();
+
+                // Generate the contract
+                storage_miner::generate_contract(&branch);
+
+                // Compile the generated contract
+                let contract_path = "contracts/WorstCaseERC20.sol";
+                info!("Compiling generated contract: {}", contract_path);
+                let compiled =
+                    compile_solidity(contract_path).expect("Failed to compile generated contract");
+
+                (compiled, storage_keys)
             } else {
-                // Assume it's raw bytecode
-                std::fs::read(&init_code_path).expect("Failed to read init code file")
-            }
-        } else if args.depth > 0 {
-            // No init code provided but depth specified - generate and compile a contract with the specified depth
-            info!("No init code provided. Generating contract with depth {}...", args.depth);
-
-            // First, mine storage slots for the contract
-            let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
-
-            // Generate the contract
-            storage_miner::generate_contract(&branch);
-
-            // Compile the generated contract
-            let contract_path = "contracts/WorstCaseERC20.sol";
-            info!("Compiling generated contract: {}", contract_path);
-            compile_solidity_to_bytecode(contract_path)
-                .expect("Failed to compile generated contract")
-        } else {
-            panic!("For CREATE2 mining, either provide --init-code or specify --depth to auto-generate a contract");
-        };
+                panic!(
+                    "For CREATE2 mining, either provide --init-code or specify --depth to auto-generate a contract"
+                );
+            };
 
         account_miner::mine_create2_accounts(
             deployer,
             num_contracts,
             args.depth,
             args.threads,
-            &init_code,
+            &compiled.init_code,
+            &compiled.deploy_code,
+            &storage_keys,
             &args.accounts_output,
         );
 
@@ -145,11 +175,28 @@ fn main() {
     storage_miner::generate_contract(&branch);
 }
 
-/// Parse hex address string to bytes
-fn compile_solidity_to_bytecode(sol_path: &str) -> Result<Vec<u8>, String> {
-    // Run solc to compile the contract with consistent metadata settings
+/// Result of compiling a Solidity contract
+struct CompiledContract {
+    /// Init code (constructor + runtime) - used for CREATE2 address calculation
+    init_code: Vec<u8>,
+    /// Deploy code (runtime only) - what ends up on chain
+    deploy_code: Vec<u8>,
+}
+
+/// Compile a Solidity file and return both init code and runtime code
+fn compile_solidity(sol_path: &str) -> Result<CompiledContract, String> {
+    // Run solc to compile the contract with both --bin and --bin-runtime
     let output = Command::new("solc")
-        .args(["--optimize", "--optimize-runs", "200", "--bin", "--metadata-hash", "none", sol_path])
+        .args([
+            "--optimize",
+            "--optimize-runs",
+            "200",
+            "--bin",
+            "--bin-runtime",
+            "--metadata-hash",
+            "none",
+            sol_path,
+        ])
         .output()
         .map_err(|e| format!("Failed to run solc: {}. Make sure solc is installed.", e))?;
 
@@ -159,25 +206,45 @@ fn compile_solidity_to_bytecode(sol_path: &str) -> Result<Vec<u8>, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Find the binary output (it comes after "Binary:" line)
     let lines: Vec<&str> = stdout.lines().collect();
-    let mut found_binary = false;
+
+    let mut init_code: Option<Vec<u8>> = None;
+    let mut deploy_code: Option<Vec<u8>> = None;
+    let mut next_is_binary = false;
+    let mut next_is_runtime = false;
+
     for line in lines {
-        if found_binary {
-            // This is the bytecode line
+        if next_is_binary {
             let bytecode_hex = line.trim();
             if !bytecode_hex.is_empty() {
-                return hex::decode(bytecode_hex)
-                    .map_err(|e| format!("Failed to decode bytecode hex: {}", e));
+                init_code = Some(
+                    hex::decode(bytecode_hex)
+                        .map_err(|e| format!("Failed to decode init code hex: {}", e))?,
+                );
             }
+            next_is_binary = false;
+        } else if next_is_runtime {
+            let bytecode_hex = line.trim();
+            if !bytecode_hex.is_empty() {
+                deploy_code = Some(
+                    hex::decode(bytecode_hex)
+                        .map_err(|e| format!("Failed to decode runtime code hex: {}", e))?,
+                );
+            }
+            next_is_runtime = false;
         }
-        if line.contains("Binary:") {
-            found_binary = true;
+
+        if line.contains("Binary:") && !line.contains("Binary of the runtime") {
+            next_is_binary = true;
+        } else if line.contains("Binary of the runtime") {
+            next_is_runtime = true;
         }
     }
 
-    Err("Could not find bytecode in solc output".to_string())
+    Ok(CompiledContract {
+        init_code: init_code.ok_or("Could not find init code in solc output")?,
+        deploy_code: deploy_code.ok_or("Could not find runtime code in solc output")?,
+    })
 }
 
 fn parse_address(hex_str: &str) -> Result<[u8; 20], String> {
