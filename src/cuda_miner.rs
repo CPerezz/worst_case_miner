@@ -2,7 +2,7 @@
 use log::{info, warn};
 
 #[cfg(feature = "cuda")]
-use crate::storage_miner::{calculate_storage_slot, has_nibble_prefix};
+use crate::storage_miner::{calculate_storage_slot, has_exact_nibble_prefix};
 
 #[cfg(feature = "cuda")]
 unsafe extern "C" {
@@ -109,9 +109,9 @@ pub fn mine_with_cuda(
         if found {
             // Verify the result using CPU to catch any CUDA false positives
             let cpu_storage_key = calculate_storage_slot(&result_address, base_slot);
-            if !has_nibble_prefix(&cpu_storage_key, target_prefix, required_nibbles) {
+            if !has_exact_nibble_prefix(&cpu_storage_key, target_prefix, required_nibbles) {
                 warn!(
-                    "CUDA returned false positive! Address 0x{} does not match {} nibbles. Continuing search...",
+                    "CUDA returned false positive! Address 0x{} does not match exactly {} nibbles. Continuing search...",
                     hex::encode(&result_address),
                     required_nibbles
                 );

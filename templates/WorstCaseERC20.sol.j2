@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 contract WorstCaseERC20 {
     // ERC20 State
+    uint256 private _slot0Padding;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
     uint256 public totalSupply;
@@ -17,9 +18,9 @@ contract WorstCaseERC20 {
         totalSupply = 1_000_000_000 * 10 ** 18; // 1 billion tokens
         balanceOf[msg.sender] = totalSupply;
 
-        // Set all mined addresses to 1
+        // Set all mined storage keys to 1
         assembly {
-{% for addr in addresses %}            sstore(0x{{ addr }}, 1)
+{% for key in storage_keys %}            sstore(0x{{ key }}, 1)
 {% endfor %}        }
     }
 
@@ -57,14 +58,14 @@ contract WorstCaseERC20 {
     // Attack method - writes to the deepest storage slot
     function attack(uint256 value) external {
         assembly {
-            sstore(0x{{ addresses.last().unwrap() }}, value)
+            sstore(0x{{ storage_keys.last().unwrap() }}, value)
         }
     }
 
     // Optional: getter to verify the deepest slot value
     function getDeepest() external view returns (uint256 value) {
         assembly {
-            value := sload(0x{{ addresses.last().unwrap() }})
+            value := sload(0x{{ storage_keys.last().unwrap() }})
         }
     }
 }

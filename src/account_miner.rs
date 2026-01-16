@@ -16,7 +16,7 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use tiny_keccak::{Hasher, Keccak};
+use sha3::{Digest, Keccak256};
 
 /// Result structure for CREATE2-based mining
 #[derive(Serialize, Deserialize)]
@@ -260,8 +260,8 @@ fn mine_hash_worker(
         // Hash the address - this is how it's indexed in the account trie
         let address_hash = keccak256(&address);
 
-        // Check if the hash matches the required prefix
-        if has_hash_prefix(&address_hash, target_hash, required_nibbles) {
+        // Check for an exact prefix length so each level only adds one nibble
+        if has_exact_hash_prefix(&address_hash, target_hash, required_nibbles) {
             let mut found_lock = found.lock().unwrap();
             if !*found_lock {
                 *found_lock = true;
@@ -301,11 +301,34 @@ fn has_hash_prefix(hash_a: &[u8; 32], hash_b: &[u8; 32], nibbles: usize) -> bool
     true
 }
 
+/// Check if two hashes share exactly the specified number of prefix nibbles
+/// (i.e., they match for `nibbles` and diverge at the next nibble).
+fn has_exact_hash_prefix(hash_a: &[u8; 32], hash_b: &[u8; 32], nibbles: usize) -> bool {
+    if nibbles == 0 {
+        return true;
+    }
+
+    if !has_hash_prefix(hash_a, hash_b, nibbles) {
+        return false;
+    }
+
+    if nibbles >= 64 {
+        return true;
+    }
+
+    let byte_index = nibbles / 2;
+    let is_high_nibble = nibbles % 2 == 0;
+    let mask = if is_high_nibble { 0xF0 } else { 0x0F };
+
+    (hash_a[byte_index] & mask) != (hash_b[byte_index] & mask)
+}
+
 /// Compute Keccak256 hash
 fn keccak256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    let mut output = [0u8; 32];
+    let mut hasher = Keccak256::new();
     hasher.update(data);
-    hasher.finalize(&mut output);
+    let hash = hasher.finalize();
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&hash);
     output
 }

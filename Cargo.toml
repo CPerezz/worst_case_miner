@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
-tiny-keccak = { version = "2.0", features = ["keccak"] }
+sha3 = "0.10"
 hex = "0.4"
 rand = "0.8"
 fastrand = "2.0"

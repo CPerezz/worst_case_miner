@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use tiny_keccak::{Hasher, Keccak};
+use sha3::{Digest, Keccak256};
 
 #[cfg(feature = "cuda")]
 use crate::cuda_miner;
@@ -25,12 +25,12 @@ use crate::cuda_miner;
 #[derive(Template)]
 #[template(path = "WorstCaseERC20.sol.j2")]
 pub struct ContractTemplate {
-    addresses: Vec<String>,
+    storage_keys: Vec<String>,
 }
 
 /// Standard ERC20 balance mapping storage slot
-/// In OpenZeppelin's ERC20 implementation, _balances is the first state variable (slot 0)
-pub const ERC20_BALANCES_SLOT: u64 = 0;
+/// Note: This repo targets slot 1 for balance mapping in the mined layout.
+pub const ERC20_BALANCES_SLOT: u64 = 1;
 
 #[derive(Clone, Debug)]
 pub struct StorageSlot {
@@ -42,7 +42,6 @@ pub struct StorageSlot {
 
 /// Calculate the storage slot for a given address in the balances mapping
 pub fn calculate_storage_slot(address: &[u8; 20], base_slot: u64) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
     let mut storage_key = [0u8; 32];
 
     // For mappings in Solidity: keccak256(key || slot)
@@ -55,9 +54,11 @@ pub fn calculate_storage_slot(address: &[u8; 20], base_slot: u64) -> [u8; 32] {
     slot_bytes[24..32].copy_from_slice(&base_slot.to_be_bytes());
 
     // Hash the concatenated data
+    let mut hasher = Keccak256::new();
     hasher.update(&padded_address);
     hasher.update(&slot_bytes);
-    hasher.finalize(&mut storage_key);
+    let hash = hasher.finalize();
+    storage_key.copy_from_slice(&hash);
 
     storage_key
 }
@@ -79,8 +80,8 @@ pub fn mine_deep_branch(
         // Each level should share an increasing number of nibbles:
         // Level 1: any address (0 shared nibbles required)
         // Level 2: 1 shared nibble with level 1
-        // Level 3: 2 shared nibbles with levels 1 & 2
-        // Level N: N-1 shared nibbles with all previous levels
+        // Level 3: 2 shared nibbles with level 2
+        // Level N: N-1 shared nibbles with the previous level
         let required_prefix_nibbles = current_depth;
 
         info!(
@@ -234,8 +235,6 @@ fn mine_worker_for_prefix(
         rng.fill(&mut address);
 
         // Calculate storage key inline for better performance
-        use tiny_keccak::{Hasher, Keccak};
-        let mut hasher = Keccak::v256();
         let mut storage_key = [0u8; 32];
 
         // Prepare padded address
@@ -243,12 +242,14 @@ fn mine_worker_for_prefix(
         padded_address[12..32].copy_from_slice(&address);
 
         // Hash in one go
+        let mut hasher = Keccak256::new();
         hasher.update(&padded_address);
         hasher.update(&slot_bytes);
-        hasher.finalize(&mut storage_key);
+        let hash = hasher.finalize();
+        storage_key.copy_from_slice(&hash);
 
-        // Check if it matches the required prefix
-        if has_nibble_prefix(&storage_key, target_prefix, required_nibbles) {
+        // Check for an exact prefix length so each level only adds one nibble
+        if has_exact_nibble_prefix(&storage_key, target_prefix, required_nibbles) {
             // Use compare_exchange for atomic flag setting
             if found
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
@@ -290,6 +291,29 @@ pub fn has_nibble_prefix(a: &[u8; 32], b: &[u8; 32], nibbles: usize) -> bool {
     true
 }
 
+/// Check if two storage keys share exactly the specified number of prefix nibbles
+/// (i.e., they match for `nibbles` and diverge at the next nibble).
+pub fn has_exact_nibble_prefix(a: &[u8; 32], b: &[u8; 32], nibbles: usize) -> bool {
+    if nibbles == 0 {
+        return true;
+    }
+
+    if !has_nibble_prefix(a, b, nibbles) {
+        return false;
+    }
+
+    // If we've matched the full key, there is no "next nibble" to diverge on.
+    if nibbles >= 64 {
+        return true;
+    }
+
+    let byte_index = nibbles / 2;
+    let is_high_nibble = nibbles % 2 == 0;
+    let mask = if is_high_nibble { 0xF0 } else { 0x0F };
+
+    (a[byte_index] & mask) != (b[byte_index] & mask)
+}
+
 pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("");
     info!("╔════════════════════════════════════════════════════════════════════════╗");
@@ -305,8 +329,8 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
 
     // Show the common prefix that all addresses share
     if branch.len() > 1 {
-        let common_nibbles = branch.len() - 1;
         let common_prefix = get_common_prefix(branch);
+        let common_nibbles = common_prefix.len();
         info!("Common prefix ({common_nibbles} nibbles): 0x{common_prefix}");
         info!("");
     }
@@ -340,18 +364,33 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("");
 }
 
-/// Get the common prefix shared by all addresses in the branch
+/// Get the common prefix shared by all storage keys in the branch
 fn get_common_prefix(branch: &[StorageSlot]) -> String {
     if branch.is_empty() {
         return String::new();
     }
 
-    let first_key = &branch[0].storage_key;
-    let min_shared = branch.len() - 1;
+    let hex_keys: Vec<String> = branch
+        .iter()
+        .map(|slot| hex::encode(slot.storage_key))
+        .collect();
 
-    // Convert to hex and take the appropriate number of nibbles
-    let hex_str = hex::encode(first_key);
-    hex_str.chars().take(min_shared).collect()
+    let first = &hex_keys[0];
+    let mut prefix_len = 0usize;
+
+    for (idx, ch) in first.chars().enumerate() {
+        if hex_keys
+            .iter()
+            .skip(1)
+            .all(|key| key.as_bytes()[idx] == ch as u8)
+        {
+            prefix_len += 1;
+        } else {
+            break;
+        }
+    }
+
+    first.chars().take(prefix_len).collect()
 }
 
 /// Count how many nibbles two storage keys share
@@ -375,13 +414,13 @@ pub fn generate_contract(branch: &[StorageSlot]) {
     info!("");
 
     // Step 1: Generate the contract using Askama template
-    let addresses: Vec<String> = branch
+    let storage_keys: Vec<String> = branch
         .iter()
-        .map(|slot| hex::encode(slot.address))
+        .map(|slot| hex::encode(slot.storage_key))
         .collect();
 
     let template = ContractTemplate {
-        addresses: addresses.clone(),
+        storage_keys,
     };
 
     let contract_source = match template.render() {

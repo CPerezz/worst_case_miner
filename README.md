@@ -144,7 +144,7 @@ Generate a Solidity contract with mined storage slots:
 The account trie uses `keccak256(address)` as keys, not the raw address. Our CREATE2 mining finds auxiliary accounts whose hashes share prefixes with the contract's hash, creating deep branches in the account trie.
 
 ### Storage Slot Calculation
-Storage slots follow Solidity's mapping layout: `keccak256(address || slot)` where slot 0 is used for ERC20 balances.
+Storage slots follow Solidity's mapping layout: `keccak256(address || slot)` where slot 1 is used for ERC20 balances in this repo's template.
 
 ### Worst-Case Trie Structure
 By creating addresses/slots with shared prefixes, we force:
