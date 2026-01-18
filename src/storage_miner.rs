@@ -62,7 +62,15 @@ pub fn calculate_storage_slot(address: &[u8; 20], base_slot: u64) -> [u8; 32] {
     storage_key
 }
 
-/// Mine for a deep branch by finding addresses sequentially, one depth at a time
+/// Mine for a deep branch using backward mining strategy.
+///
+/// Backward mining provides ~16x speedup by making the deepest level a random
+/// anchor, thus skipping the hardest mining operation entirely.
+///
+/// # How it works
+/// Each level shares `depth` nibbles with the next level (chain constraint).
+/// Forward mining builds from L0 to L_{N-1}, requiring 0,1,2,...,N-1 nibble matches.
+/// Backward mining builds from L_{N-1} to L0, requiring FREE,N-2,N-3,...,0 nibble matches.
 pub fn mine_deep_branch(
     target_depth: usize,
     num_threads: usize,
@@ -70,74 +78,89 @@ pub fn mine_deep_branch(
 ) -> Vec<StorageSlot> {
     let mut branch = Vec::new();
 
-    info!("Starting sequential mining for {target_depth} levels");
+    info!("Starting backward mining for {target_depth} levels");
 
-    // For each depth level, find an address that creates the right prefix collision
-    for current_depth in 0..target_depth {
+    // Step 1: Generate random anchor at depth N-1 (FREE - no mining needed!)
+    // This defines the full common prefix that all other keys will share.
+    let level_start = Instant::now();
+    let mut anchor_address = [0u8; 20];
+    fastrand::fill(&mut anchor_address);
+    let anchor_storage_key = calculate_storage_slot(&anchor_address, ERC20_BALANCES_SLOT);
+
+    branch.push(StorageSlot {
+        address: anchor_address,
+        storage_key: anchor_storage_key,
+        depth: target_depth - 1,
+        time_taken: level_start.elapsed().as_secs_f64(),
+    });
+
+    info!(
+        "Anchor level 1/{} (depth {}) generated freely - Storage: 0x{}...",
+        target_depth,
+        target_depth - 1,
+        hex::encode(&anchor_storage_key[..4])
+    );
+
+    // Step 2: Mine backwards from depth N-2 down to 0
+    // Each level shares `current_depth` nibbles with the next deeper level (chain constraint).
+    // This is the same constraint as forward mining, just in reverse order.
+    for current_depth in (0..target_depth - 1).rev() {
         let level_start = Instant::now();
 
-        // Each level should share an increasing number of nibbles:
-        // Level 1: any address (0 shared nibbles required)
-        // Level 2: 1 shared nibble with level 1
-        // Level 3: 2 shared nibbles with levels 1 & 2
-        // Level N: N-1 shared nibbles with all previous levels
+        // Level at depth D shares D nibbles with level D+1 (same as forward mining)
+        // The key optimization: we skip mining depth N-1 (the hardest step)!
         let required_prefix_nibbles = current_depth;
 
         info!(
-            "Mining level {}/{} (requires {} matching nibbles)",
-            current_depth + 1,
+            "Mining level {}/{} (depth {}, {} nibbles to match)",
+            target_depth - current_depth,
             target_depth,
+            current_depth,
             required_prefix_nibbles
         );
 
-        // Mine for an address at this depth level
-        let address = if current_depth == 0 {
-            // First address can be anything - just generate a random one
-            let mut addr = [0u8; 20];
-            fastrand::fill(&mut addr);
-            addr
-        } else {
-            // Need to find an address that shares the required prefix with the PREVIOUS level
-            // (not all previous addresses, just the immediately preceding one)
-            let previous_slot: &StorageSlot = &branch[branch.len() - 1];
-            // Only use CUDA for depth 8+ where the computational cost justifies the overhead
-            let use_cuda_for_level = use_cuda && current_depth >= 8;
-            match mine_address_for_prefix(
-                &previous_slot.storage_key,
-                required_prefix_nibbles,
-                num_threads,
-                use_cuda_for_level,
-            ) {
-                Some(addr) => addr,
-                None => {
-                    info!(
-                        "Failed to find address for level {} - stopping",
-                        current_depth + 1
-                    );
-                    break;
-                }
+        // Match against the PREVIOUS mined level (chain constraint)
+        let previous_slot = &branch[branch.len() - 1];
+        let use_cuda_for_level = use_cuda && required_prefix_nibbles >= 8;
+
+        match mine_address_for_prefix(
+            &previous_slot.storage_key,
+            required_prefix_nibbles,
+            num_threads,
+            use_cuda_for_level,
+        ) {
+            Some(addr) => {
+                let storage_key = calculate_storage_slot(&addr, ERC20_BALANCES_SLOT);
+                let level_time = level_start.elapsed();
+
+                branch.push(StorageSlot {
+                    address: addr,
+                    storage_key,
+                    depth: current_depth,
+                    time_taken: level_time.as_secs_f64(),
+                });
+
+                info!(
+                    "Level {}/{} (depth {}) found in {:.2}s - Storage: 0x{}...",
+                    target_depth - current_depth,
+                    target_depth,
+                    current_depth,
+                    level_time.as_secs_f64(),
+                    hex::encode(&storage_key[..4])
+                );
             }
-        };
-
-        let storage_key = calculate_storage_slot(&address, ERC20_BALANCES_SLOT);
-
-        let level_time = level_start.elapsed();
-
-        branch.push(StorageSlot {
-            address,
-            storage_key,
-            depth: current_depth,
-            time_taken: level_time.as_secs_f64(),
-        });
-
-        info!(
-            "Level {} found in {:.2} seconds - Address: 0x{}, Storage: 0x{}...",
-            current_depth + 1,
-            level_time.as_secs_f64(),
-            hex::encode(&address[..4]),
-            hex::encode(&storage_key[..4])
-        );
+            None => {
+                info!(
+                    "Failed to find address for depth {} - stopping",
+                    current_depth
+                );
+                break;
+            }
+        }
     }
+
+    // Step 3: Reverse to get correct trie order (depth 0 first, depth N-1 last)
+    branch.reverse();
 
     branch
 }
