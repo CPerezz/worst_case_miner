@@ -25,7 +25,7 @@ use crate::cuda_miner;
 #[derive(Template)]
 #[template(path = "WorstCaseERC20.sol.j2")]
 pub struct ContractTemplate {
-    addresses: Vec<String>,
+    storage_keys: Vec<String>,
 }
 
 /// Standard ERC20 balance mapping storage slot
@@ -389,6 +389,15 @@ fn count_shared_nibbles(a: &[u8; 32], b: &[u8; 32]) -> usize {
         .count()
 }
 
+fn render_contract(branch: &[StorageSlot]) -> Result<String, askama::Error> {
+    let storage_keys = branch
+        .iter()
+        .map(|slot| hex::encode(slot.storage_key))
+        .collect();
+
+    ContractTemplate { storage_keys }.render()
+}
+
 /// Generate and compile the Solidity contract with hardcoded storage keys
 pub fn generate_contract(branch: &[StorageSlot]) {
     info!("");
@@ -398,16 +407,7 @@ pub fn generate_contract(branch: &[StorageSlot]) {
     info!("");
 
     // Step 1: Generate the contract using Askama template
-    let addresses: Vec<String> = branch
-        .iter()
-        .map(|slot| hex::encode(slot.address))
-        .collect();
-
-    let template = ContractTemplate {
-        addresses: addresses.clone(),
-    };
-
-    let contract_source = match template.render() {
+    let contract_source = match render_contract(branch) {
         Ok(source) => source,
         Err(e) => {
             log::error!("Failed to render contract template: {e}");

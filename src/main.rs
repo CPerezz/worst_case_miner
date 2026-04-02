@@ -80,71 +80,74 @@ fn main() {
         };
 
         // Load or generate init code, deploy code, and storage keys
-        let (compiled, storage_keys): (CompiledContract, Vec<[u8; 20]>) =
-            if let Some(init_code_path) = args.init_code {
-                // Check if it's a .sol file or a hex file
-                if init_code_path.ends_with(".sol") {
-                    // Compile the Solidity file to get bytecode
-                    info!("Compiling Solidity contract: {}", init_code_path);
-                    let compiled =
-                        compile_solidity(&init_code_path).expect("Failed to compile Solidity contract");
-                    // When loading from external .sol file, we don't have storage keys
-                    (compiled, Vec::new())
-                } else if init_code_path.ends_with(".hex") || init_code_path.ends_with(".bin") {
-                    // Read hex bytecode from file
-                    info!("Loading bytecode from: {}", init_code_path);
-                    let hex_content = std::fs::read_to_string(&init_code_path)
-                        .expect("Failed to read bytecode file");
-                    let hex_content = hex_content.trim();
-                    let hex_content = hex_content.strip_prefix("0x").unwrap_or(hex_content);
-                    let init_code = hex::decode(hex_content).expect("Invalid hex in bytecode file");
-                    // For raw bytecode, we don't have deploy_code or storage_keys
-                    (
-                        CompiledContract {
-                            init_code,
-                            deploy_code: Vec::new(),
-                        },
-                        Vec::new(),
-                    )
-                } else {
-                    // Assume it's raw bytecode
-                    let init_code = std::fs::read(&init_code_path).expect("Failed to read init code file");
-                    (
-                        CompiledContract {
-                            init_code,
-                            deploy_code: Vec::new(),
-                        },
-                        Vec::new(),
-                    )
-                }
-            } else if args.depth > 0 {
-                // No init code provided but depth specified - generate and compile a contract with the specified depth
-                info!(
-                    "No init code provided. Generating contract with depth {}...",
-                    args.depth
-                );
-
-                // First, mine storage slots for the contract
-                let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
-
-                // Extract storage keys (addresses) from the mined branch
-                let storage_keys: Vec<[u8; 20]> = branch.iter().map(|slot| slot.address).collect();
-
-                // Generate the contract
-                storage_miner::generate_contract(&branch);
-
-                // Compile the generated contract
-                let contract_path = "contracts/WorstCaseERC20.sol";
-                info!("Compiling generated contract: {}", contract_path);
+        let (compiled, storage_keys): (CompiledContract, Vec<[u8; 32]>) = if let Some(
+            init_code_path,
+        ) = args.init_code
+        {
+            // Check if it's a .sol file or a hex file
+            if init_code_path.ends_with(".sol") {
+                // Compile the Solidity file to get bytecode
+                info!("Compiling Solidity contract: {}", init_code_path);
                 let compiled =
-                    compile_solidity(contract_path).expect("Failed to compile generated contract");
-
-                (compiled, storage_keys)
+                    compile_solidity(&init_code_path).expect("Failed to compile Solidity contract");
+                // When loading from external .sol file, we don't have storage keys
+                (compiled, Vec::new())
+            } else if init_code_path.ends_with(".hex") || init_code_path.ends_with(".bin") {
+                // Read hex bytecode from file
+                info!("Loading bytecode from: {}", init_code_path);
+                let hex_content =
+                    std::fs::read_to_string(&init_code_path).expect("Failed to read bytecode file");
+                let hex_content = hex_content.trim();
+                let hex_content = hex_content.strip_prefix("0x").unwrap_or(hex_content);
+                let init_code = hex::decode(hex_content).expect("Invalid hex in bytecode file");
+                // For raw bytecode, we don't have deploy_code or storage_keys
+                (
+                    CompiledContract {
+                        init_code,
+                        deploy_code: Vec::new(),
+                    },
+                    Vec::new(),
+                )
             } else {
-                panic!(
-                    "For CREATE2 mining, either provide --init-code or specify --depth to auto-generate a contract"
-                );
-            };
+                // Assume it's raw bytecode
+                let init_code =
+                    std::fs::read(&init_code_path).expect("Failed to read init code file");
+                (
+                    CompiledContract {
+                        init_code,
+                        deploy_code: Vec::new(),
+                    },
+                    Vec::new(),
+                )
+            }
+        } else if args.depth > 0 {
+            // No init code provided but depth specified - generate and compile a contract with the specified depth
+            info!(
+                "No init code provided. Generating contract with depth {}...",
+                args.depth
+            );
+
+            // First, mine storage slots for the contract
+            let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
+
+            // Extract the actual 32-byte mapping storage keys from the mined branch
+            let storage_keys: Vec<[u8; 32]> = branch.iter().map(|slot| slot.storage_key).collect();
+
+            // Generate the contract
+            storage_miner::generate_contract(&branch);
+
+            // Compile the generated contract
+            let contract_path = "contracts/WorstCaseERC20.sol";
+            info!("Compiling generated contract: {}", contract_path);
+            let compiled =
+                compile_solidity(contract_path).expect("Failed to compile generated contract");
+
+            (compiled, storage_keys)
+        } else {
+            panic!(
+                "For CREATE2 mining, either provide --init-code or specify --depth to auto-generate a contract"
+            );
+        };
 
         account_miner::mine_create2_accounts(
             deployer,
