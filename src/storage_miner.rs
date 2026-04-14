@@ -408,8 +408,8 @@ fn render_contract(branch: &[StorageSlot]) -> Result<String, askama::Error> {
     ContractTemplate { storage_keys }.render()
 }
 
-/// Generate and compile the Solidity contract with hardcoded storage keys
-pub fn generate_contract(branch: &[StorageSlot]) {
+/// Generate the Solidity contract with hardcoded storage keys.
+pub fn generate_contract(branch: &[StorageSlot]) -> Result<(), String> {
     info!("");
     info!("╔════════════════════════════════════════════════════════════════════════╗");
     info!("║                     CONTRACT GENERATION & COMPILATION                  ║");
@@ -417,25 +417,17 @@ pub fn generate_contract(branch: &[StorageSlot]) {
     info!("");
 
     // Step 1: Generate the contract using Askama template
-    let contract_source = match render_contract(branch) {
-        Ok(source) => source,
-        Err(e) => {
-            log::error!("Failed to render contract template: {e}");
-            return;
-        }
-    };
+    let contract_source =
+        render_contract(branch).map_err(|e| format!("Failed to render contract template: {e}"))?;
 
     // Ensure contracts directory exists
-    if let Err(e) = fs::create_dir_all("contracts") {
-        log::error!("Failed to create contracts directory: {e}");
-        return;
-    }
+    fs::create_dir_all("contracts")
+        .map_err(|e| format!("Failed to create contracts directory: {e}"))?;
 
     // Save the generated contract
     let contract_path = "contracts/WorstCaseERC20.sol";
-    if let Err(e) = fs::write(contract_path, &contract_source) {
-        log::error!("Failed to write contract: {e}");
-        return;
-    }
+    fs::write(contract_path, &contract_source)
+        .map_err(|e| format!("Failed to write contract: {e}"))?;
     info!("Generated contract saved to: {contract_path}");
+    Ok(())
 }

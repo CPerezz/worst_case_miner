@@ -134,7 +134,8 @@ fn main() {
             let storage_keys: Vec<[u8; 32]> = branch.iter().map(|slot| slot.storage_key).collect();
 
             // Generate the contract
-            storage_miner::generate_contract(&branch);
+            storage_miner::generate_contract(&branch)
+                .expect("Failed to generate contract from mined storage slots");
 
             // Compile the generated contract
             let contract_path = "contracts/WorstCaseERC20.sol";
@@ -175,7 +176,8 @@ fn main() {
     storage_miner::print_results(&branch, elapsed.as_secs_f64());
 
     // Generate contract with mined storage keys
-    storage_miner::generate_contract(&branch);
+    storage_miner::generate_contract(&branch)
+        .expect("Failed to generate contract from mined storage slots");
 }
 
 /// Result of compiling a Solidity contract
