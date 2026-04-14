@@ -5,7 +5,7 @@
 //! increasingly long prefixes, forcing deep branches in the Modified Patricia Trie structure.
 //!
 //! ## Key Functions
-//! - `mine_deep_branch`: Mines a sequence of addresses creating a deep storage trie branch
+//! - `mine_deep_branch`: Mines a sequence of addresses whose derived storage keys create a deep storage trie branch
 //! - `calculate_storage_slot`: Computes the storage slot for an address in an ERC20 balance mapping
 //! - `generate_contract`: Creates a Solidity contract with the mined storage slots
 
@@ -323,10 +323,10 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("Total time taken: {elapsed_seconds:.2} seconds");
     info!("ERC20 balance mapping slot: {ERC20_BALANCES_SLOT}");
     info!("");
-    info!("═══ Branch Structure (Sequential Addresses) ═══");
+    info!("═══ Branch Structure (Sequential Storage Keys) ═══");
     info!("");
 
-    // Show the common prefix that all addresses share
+    // Show the common prefix that all storage keys share
     if branch.len() > 1 {
         let common_nibbles = branch.len() - 1;
         let common_prefix = get_common_prefix(branch);
@@ -334,7 +334,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
         info!("");
     }
 
-    // Print each address in the branch
+    // Print each entry in the branch
     for (i, slot) in branch.iter().enumerate() {
         info!("Level {} (Depth {}):", i + 1, slot.depth);
         info!("  Address:     0x{}", hex::encode(slot.address));
@@ -349,7 +349,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     }
 
     info!("═══ Statistics ═══");
-    info!("Total addresses mined: {}", branch.len());
+    info!("Total storage slots mined: {}", branch.len());
     info!("");
     info!("Time per depth level:");
     for (i, slot) in branch.iter().enumerate() {
@@ -363,7 +363,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("");
 }
 
-/// Get the common prefix shared by all addresses in the branch
+/// Get the common prefix shared by all storage keys in the branch
 fn get_common_prefix(branch: &[StorageSlot]) -> String {
     if branch.is_empty() {
         return String::new();
