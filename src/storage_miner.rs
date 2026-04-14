@@ -10,7 +10,7 @@
 //! - `generate_contract`: Creates a Solidity contract with the mined storage slots
 
 use askama::Template;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -75,8 +75,12 @@ pub fn mine_deep_branch(
     target_depth: usize,
     num_threads: usize,
     use_cuda: bool,
-) -> Vec<StorageSlot> {
-    let mut branch = Vec::new();
+) -> Result<Vec<StorageSlot>, String> {
+    if target_depth == 0 {
+        return Err("Target depth must be greater than zero".to_string());
+    }
+
+    let mut branch = Vec::with_capacity(target_depth);
 
     info!("Starting backward mining for {target_depth} levels");
 
@@ -150,11 +154,12 @@ pub fn mine_deep_branch(
                 );
             }
             None => {
-                info!(
-                    "Failed to find address for depth {} - stopping",
-                    current_depth
+                let mined_levels = branch.len();
+                let message = format!(
+                    "Failed to find address for depth {current_depth}; mined {mined_levels} of {target_depth} requested storage slots"
                 );
-                break;
+                warn!("{message}");
+                return Err(message);
             }
         }
     }
@@ -162,7 +167,7 @@ pub fn mine_deep_branch(
     // Step 3: Reverse to get correct trie order (depth 0 first, depth N-1 last)
     branch.reverse();
 
-    branch
+    Ok(branch)
 }
 
 /// Mine for a single address that shares a prefix with the target storage key

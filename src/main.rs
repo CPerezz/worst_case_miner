@@ -128,7 +128,8 @@ fn main() {
             );
 
             // First, mine storage slots for the contract
-            let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false);
+            let branch = storage_miner::mine_deep_branch(args.depth, args.threads, false)
+                .unwrap_or_else(|e| panic!("Failed to mine storage branch: {e}"));
 
             // Extract the actual 32-byte mapping storage keys from the mined branch
             let storage_keys: Vec<[u8; 32]> = branch.iter().map(|slot| slot.storage_key).collect();
@@ -168,7 +169,8 @@ fn main() {
     let start_time = Instant::now();
 
     // Mine for the deep branch (storage)
-    let branch = storage_miner::mine_deep_branch(args.depth, args.threads, args.cuda);
+    let branch = storage_miner::mine_deep_branch(args.depth, args.threads, args.cuda)
+        .unwrap_or_else(|e| panic!("Failed to mine storage branch: {e}"));
 
     let elapsed = start_time.elapsed();
 
