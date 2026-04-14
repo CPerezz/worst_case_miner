@@ -5,12 +5,12 @@
 //! increasingly long prefixes, forcing deep branches in the Modified Patricia Trie structure.
 //!
 //! ## Key Functions
-//! - `mine_deep_branch`: Mines a sequence of addresses creating a deep storage trie branch
+//! - `mine_deep_branch`: Mines a sequence of addresses whose derived storage keys create a deep storage trie branch
 //! - `calculate_storage_slot`: Computes the storage slot for an address in an ERC20 balance mapping
 //! - `generate_contract`: Creates a Solidity contract with the mined storage slots
 
 use askama::Template;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,7 +25,7 @@ use crate::cuda_miner;
 #[derive(Template)]
 #[template(path = "WorstCaseERC20.sol.j2")]
 pub struct ContractTemplate {
-    addresses: Vec<String>,
+    storage_keys: Vec<String>,
 }
 
 /// Standard ERC20 balance mapping storage slot
@@ -75,8 +75,12 @@ pub fn mine_deep_branch(
     target_depth: usize,
     num_threads: usize,
     use_cuda: bool,
-) -> Vec<StorageSlot> {
-    let mut branch = Vec::new();
+) -> Result<Vec<StorageSlot>, String> {
+    if target_depth == 0 {
+        return Err("Target depth must be greater than zero".to_string());
+    }
+
+    let mut branch = Vec::with_capacity(target_depth);
 
     info!("Starting backward mining for {target_depth} levels");
 
@@ -150,11 +154,12 @@ pub fn mine_deep_branch(
                 );
             }
             None => {
-                info!(
-                    "Failed to find address for depth {} - stopping",
-                    current_depth
+                let mined_levels = branch.len();
+                let message = format!(
+                    "Failed to find address for depth {current_depth}; mined {mined_levels} of {target_depth} requested storage slots"
                 );
-                break;
+                warn!("{message}");
+                return Err(message);
             }
         }
     }
@@ -162,7 +167,7 @@ pub fn mine_deep_branch(
     // Step 3: Reverse to get correct trie order (depth 0 first, depth N-1 last)
     branch.reverse();
 
-    branch
+    Ok(branch)
 }
 
 /// Mine for a single address that shares a prefix with the target storage key
@@ -323,10 +328,10 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("Total time taken: {elapsed_seconds:.2} seconds");
     info!("ERC20 balance mapping slot: {ERC20_BALANCES_SLOT}");
     info!("");
-    info!("═══ Branch Structure (Sequential Addresses) ═══");
+    info!("═══ Branch Structure (Sequential Storage Keys) ═══");
     info!("");
 
-    // Show the common prefix that all addresses share
+    // Show the common prefix that all storage keys share
     if branch.len() > 1 {
         let common_nibbles = branch.len() - 1;
         let common_prefix = get_common_prefix(branch);
@@ -334,7 +339,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
         info!("");
     }
 
-    // Print each address in the branch
+    // Print each entry in the branch
     for (i, slot) in branch.iter().enumerate() {
         info!("Level {} (Depth {}):", i + 1, slot.depth);
         info!("  Address:     0x{}", hex::encode(slot.address));
@@ -349,7 +354,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     }
 
     info!("═══ Statistics ═══");
-    info!("Total addresses mined: {}", branch.len());
+    info!("Total storage slots mined: {}", branch.len());
     info!("");
     info!("Time per depth level:");
     for (i, slot) in branch.iter().enumerate() {
@@ -363,7 +368,7 @@ pub fn print_results(branch: &[StorageSlot], elapsed_seconds: f64) {
     info!("");
 }
 
-/// Get the common prefix shared by all addresses in the branch
+/// Get the common prefix shared by all storage keys in the branch
 fn get_common_prefix(branch: &[StorageSlot]) -> String {
     if branch.is_empty() {
         return String::new();
@@ -389,8 +394,27 @@ fn count_shared_nibbles(a: &[u8; 32], b: &[u8; 32]) -> usize {
         .count()
 }
 
-/// Generate and compile the Solidity contract with hardcoded storage keys
-pub fn generate_contract(branch: &[StorageSlot]) {
+fn render_contract(branch: &[StorageSlot]) -> Result<String, askama::Error> {
+    if branch.is_empty() {
+        return Err(askama::Error::Custom(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot render contract with no storage slots",
+            )
+            .into(),
+        ));
+    }
+
+    let storage_keys = branch
+        .iter()
+        .map(|slot| hex::encode(slot.storage_key))
+        .collect();
+
+    ContractTemplate { storage_keys }.render()
+}
+
+/// Generate the Solidity contract with hardcoded storage keys.
+pub fn generate_contract(branch: &[StorageSlot]) -> Result<(), String> {
     info!("");
     info!("╔════════════════════════════════════════════════════════════════════════╗");
     info!("║                     CONTRACT GENERATION & COMPILATION                  ║");
@@ -398,34 +422,17 @@ pub fn generate_contract(branch: &[StorageSlot]) {
     info!("");
 
     // Step 1: Generate the contract using Askama template
-    let addresses: Vec<String> = branch
-        .iter()
-        .map(|slot| hex::encode(slot.address))
-        .collect();
-
-    let template = ContractTemplate {
-        addresses: addresses.clone(),
-    };
-
-    let contract_source = match template.render() {
-        Ok(source) => source,
-        Err(e) => {
-            log::error!("Failed to render contract template: {e}");
-            return;
-        }
-    };
+    let contract_source =
+        render_contract(branch).map_err(|e| format!("Failed to render contract template: {e}"))?;
 
     // Ensure contracts directory exists
-    if let Err(e) = fs::create_dir_all("contracts") {
-        log::error!("Failed to create contracts directory: {e}");
-        return;
-    }
+    fs::create_dir_all("contracts")
+        .map_err(|e| format!("Failed to create contracts directory: {e}"))?;
 
     // Save the generated contract
     let contract_path = "contracts/WorstCaseERC20.sol";
-    if let Err(e) = fs::write(contract_path, &contract_source) {
-        log::error!("Failed to write contract: {e}");
-        return;
-    }
+    fs::write(contract_path, &contract_source)
+        .map_err(|e| format!("Failed to write contract: {e}"))?;
     info!("Generated contract saved to: {contract_path}");
+    Ok(())
 }

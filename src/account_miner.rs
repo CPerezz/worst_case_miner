@@ -48,7 +48,7 @@ pub fn mine_create2_accounts(
     num_threads: usize,
     init_code: &[u8],
     deploy_code: &[u8],
-    storage_keys: &[[u8; 20]],
+    storage_keys: &[[u8; 32]],
     output_path: &str,
 ) {
     info!("");
