@@ -390,6 +390,16 @@ fn count_shared_nibbles(a: &[u8; 32], b: &[u8; 32]) -> usize {
 }
 
 fn render_contract(branch: &[StorageSlot]) -> Result<String, askama::Error> {
+    if branch.is_empty() {
+        return Err(askama::Error::Custom(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot render contract with no storage slots",
+            )
+            .into(),
+        ));
+    }
+
     let storage_keys = branch
         .iter()
         .map(|slot| hex::encode(slot.storage_key))
