@@ -7,7 +7,6 @@ edition = "2024"
 clap = { version = "4.4", features = ["derive"] }
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 hex = "0.4"
-rand = "0.8"
 fastrand = "2.0"
 num_cpus = "1.16"
 log = "0.4"
@@ -26,6 +25,18 @@ cuda = ["cc"]
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
+debug = "none"
+strip = "symbols"
 panic = "abort"
+
+# `cargo build --profile maxperf` for actual mining / benchmark runs.
+# For maximum throughput on the host CPU also pass:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --profile maxperf
+# Native CPU codegen unlocks AVX2/AVX-512/BMI2 (x86) or NEON (aarch64) for
+# autovectorization of the fill / hash / prefix-compare hot path.
+[profile.maxperf]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
