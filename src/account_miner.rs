@@ -10,9 +10,9 @@
 //! - `mine_auxiliaries_for_contract`: Mines accounts whose hashes share prefixes with a contract
 
 use log::{debug, info};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -209,7 +209,7 @@ fn mine_account_with_hash_prefix(
     num_threads: usize,
 ) -> [u8; 20] {
     let result = Arc::new(Mutex::new(None));
-    let found = Arc::new(Mutex::new(false));
+    let found = Arc::new(AtomicBool::new(false));
 
     let handles: Vec<_> = (0..num_threads)
         .map(|thread_id| {
@@ -242,15 +242,16 @@ fn mine_hash_worker(
     target_hash: &[u8; 32],
     required_nibbles: usize,
     result: Arc<Mutex<Option<[u8; 20]>>>,
-    found: Arc<Mutex<bool>>,
+    found: Arc<AtomicBool>,
 ) {
-    let mut rng = rand::thread_rng();
+    let mut rng = fastrand::Rng::new();
     let mut attempts = 0u64;
     const BATCH_SIZE: u64 = 1000;
 
     loop {
-        // Check if another thread found a result
-        if attempts % BATCH_SIZE == 0 && *found.lock().unwrap() {
+        // Relaxed load is sufficient: join() on the main thread provides the
+        // happens-before edge for the eventual result read.
+        if attempts % BATCH_SIZE == 0 && found.load(Ordering::Relaxed) {
             break;
         }
 
@@ -273,9 +274,11 @@ fn mine_hash_worker(
 
         // Check if the hash matches the required prefix
         if has_hash_prefix(&address_hash, target_hash, required_nibbles) {
-            let mut found_lock = found.lock().unwrap();
-            if !*found_lock {
-                *found_lock = true;
+            // CAS ensures only the first thread to find a match writes the result.
+            if found
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
                 let mut result_lock = result.lock().unwrap();
                 *result_lock = Some(address);
                 debug!("Thread {thread_id} found match after {attempts} attempts");
