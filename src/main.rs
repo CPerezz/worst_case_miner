@@ -156,6 +156,7 @@ fn main() {
             num_contracts,
             args.depth,
             args.threads,
+            args.cuda,
             &compiled.init_code,
             &compiled.deploy_code,
             &storage_keys,
