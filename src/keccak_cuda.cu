@@ -182,46 +182,126 @@ __device__ bool check_nibble_prefix(const uint8_t* a, const uint8_t* b, int nibb
     return true;
 }
 
-// CUDA kernel for mining addresses with specific storage key prefixes
-__global__ void mine_storage_slots(
-    uint8_t* target_prefix,      // Target storage key prefix to match
-    int required_nibbles,         // Number of nibbles that must match
-    uint64_t base_slot,          // ERC20 balance mapping slot (usually 0)
-    uint64_t start_nonce,        // Starting nonce for this kernel
-    uint64_t max_attempts,       // Maximum attempts per thread
-    uint8_t* result_address,     // Output: found address (20 bytes)
-    uint8_t* result_storage_key, // Output: storage key (32 bytes)
-    int* found                   // Output: 1 if found, 0 otherwise
+// Calculate keccak256(address) — the account-trie key for a 20-byte address.
+// Padding: rate=136 bytes; data is 20 bytes, so 0x01 at byte 20, 0x80 at byte 135.
+__device__ void calculate_address_hash(uint8_t address[20], uint8_t output[32]) {
+    uint64_t state[25] = {0};
+
+    // Load 20 bytes of address into state[0], state[1], state[2] (little-endian).
+    for (int i = 0; i < 8; i++) {
+        state[0] |= ((uint64_t)address[i]) << (i * 8);
+        state[1] |= ((uint64_t)address[8 + i]) << (i * 8);
+    }
+    for (int i = 0; i < 4; i++) {
+        state[2] |= ((uint64_t)address[16 + i]) << (i * 8);
+    }
+
+    // Keccak (Ethereum) domain-separator byte 0x01 at offset 20 → byte 4 of state[2].
+    state[2] |= ((uint64_t)0x01) << (4 * 8);
+    // End-of-block bit 0x80 at byte 135 → high byte of state[16].
+    state[16] = 0x8000000000000000ULL;
+
+    keccak_f1600(state);
+
+    // Extract 32-byte digest from state[0..3].
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 8; j++) {
+            output[i * 8 + j] = (state[i] >> (j * 8)) & 0xFF;
+        }
+    }
+}
+
+// CUDA kernel for mining addresses whose keccak256(address) shares a prefix
+// with target_hash. Used by the account-trie miner.
+//
+// `found` is volatile so the polling read bypasses the L1 cache: when one
+// thread sets the flag, other warps see it within a few cycles instead of
+// running the rest of their attempt budget. The flag is only checked once
+// per CHECK_INTERVAL to keep the inner loop fast.
+__global__ void mine_account_hashes(
+    uint8_t* target_hash,
+    int required_nibbles,
+    uint64_t start_nonce,
+    uint64_t max_attempts,
+    uint8_t* result_address,
+    volatile int* found
 ) {
+    const int CHECK_INTERVAL = 1024;
+
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     uint64_t nonce = start_nonce + tid * max_attempts;
 
-    // Generate random addresses using nonce as seed
-    for (uint64_t attempt = 0; attempt < max_attempts && *found == 0; attempt++) {
-        uint8_t address[20];
-        uint8_t storage_key[32];
+    for (uint64_t attempt = 0; attempt < max_attempts; attempt++) {
+        if ((attempt & (CHECK_INTERVAL - 1)) == 0 && *found != 0) {
+            return;
+        }
 
-        // Generate pseudo-random address using xorshift64*
-        // Initialize state with nonce+attempt, ensuring it's never 0
+        uint8_t address[20];
+        uint8_t address_hash[32];
+
         uint64_t state = nonce + attempt + 1;
         #pragma unroll
         for (int i = 0; i < 20; i += 8) {
             uint64_t rand = xorshift64star(&state);
-            // Extract up to 8 bytes from the 64-bit random number
             for (int j = 0; j < 8 && (i + j) < 20; j++) {
                 address[i + j] = (rand >> (j * 8)) & 0xFF;
             }
         }
 
-        // Calculate storage slot
+        calculate_address_hash(address, address_hash);
+
+        if (check_nibble_prefix(address_hash, target_hash, required_nibbles)) {
+            int old = atomicCAS((int*)found, 0, 1);
+            if (old == 0) {
+                for (int i = 0; i < 20; i++) {
+                    result_address[i] = address[i];
+                }
+            }
+            return;
+        }
+    }
+}
+
+// CUDA kernel for mining addresses with specific storage key prefixes.
+// `found` is volatile + checked once per CHECK_INTERVAL so threads exit
+// promptly when a match is found, avoiding the "wasted work" issue.
+__global__ void mine_storage_slots(
+    uint8_t* target_prefix,
+    int required_nibbles,
+    uint64_t base_slot,
+    uint64_t start_nonce,
+    uint64_t max_attempts,
+    uint8_t* result_address,
+    uint8_t* result_storage_key,
+    volatile int* found
+) {
+    const int CHECK_INTERVAL = 1024;
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t nonce = start_nonce + tid * max_attempts;
+
+    for (uint64_t attempt = 0; attempt < max_attempts; attempt++) {
+        if ((attempt & (CHECK_INTERVAL - 1)) == 0 && *found != 0) {
+            return;
+        }
+
+        uint8_t address[20];
+        uint8_t storage_key[32];
+
+        uint64_t state = nonce + attempt + 1;
+        #pragma unroll
+        for (int i = 0; i < 20; i += 8) {
+            uint64_t rand = xorshift64star(&state);
+            for (int j = 0; j < 8 && (i + j) < 20; j++) {
+                address[i + j] = (rand >> (j * 8)) & 0xFF;
+            }
+        }
+
         calculate_storage_slot(address, base_slot, storage_key);
 
-        // Check if it matches the required prefix
         if (check_nibble_prefix(storage_key, target_prefix, required_nibbles)) {
-            // Use atomic compare-and-swap to ensure only one thread wins
-            int old = atomicCAS(found, 0, 1);
+            int old = atomicCAS((int*)found, 0, 1);
             if (old == 0) {
-                // We won! Copy results
                 for (int i = 0; i < 20; i++) {
                     result_address[i] = address[i];
                 }
@@ -284,6 +364,28 @@ __global__ void verify_keccak_kernel(uint8_t* addr, uint64_t slot, uint8_t* resu
     for (int i = 0; i < 20; i++) address[i] = addr[i];
     calculate_storage_slot(address, slot, storage_key);
     for (int i = 0; i < 32; i++) result[i] = storage_key[i];
+}
+
+__global__ void verify_account_hash_kernel(uint8_t* addr, uint8_t* result) {
+    uint8_t address[20];
+    uint8_t hash[32];
+    for (int i = 0; i < 20; i++) address[i] = addr[i];
+    calculate_address_hash(address, hash);
+    for (int i = 0; i < 32; i++) result[i] = hash[i];
+}
+
+extern "C" {
+    void cuda_verify_account_hash(uint8_t* test_address, uint8_t* result_hash) {
+        uint8_t *d_addr, *d_result;
+        cudaMalloc(&d_addr, 20);
+        cudaMalloc(&d_result, 32);
+        cudaMemcpy(d_addr, test_address, 20, cudaMemcpyHostToDevice);
+        verify_account_hash_kernel<<<1, 1>>>(d_addr, d_result);
+        cudaDeviceSynchronize();
+        cudaMemcpy(result_hash, d_result, 32, cudaMemcpyDeviceToHost);
+        cudaFree(d_addr);
+        cudaFree(d_result);
+    }
 }
 
 __global__ void debug_prng_kernel(uint64_t seed, uint64_t slot, uint8_t* result_addr, uint8_t* result_key) {
@@ -387,6 +489,53 @@ extern "C" {
         cudaFree(d_target);
         cudaFree(d_result_addr);
         cudaFree(d_result_key);
+        cudaFree(d_found);
+    }
+
+    void cuda_mine_account_hash(
+        uint8_t* target_hash,
+        int required_nibbles,
+        uint8_t* result_address,
+        bool* found,
+        int blocks,
+        int threads_per_block,
+        uint64_t attempts_per_thread,
+        uint64_t start_nonce
+    ) {
+        uint8_t *d_target, *d_result_addr;
+        int *d_found;
+
+        CUDA_CHECK(cudaMalloc(&d_target, 32));
+        CUDA_CHECK(cudaMalloc(&d_result_addr, 20));
+        CUDA_CHECK(cudaMalloc(&d_found, sizeof(int)));
+
+        CUDA_CHECK(cudaMemcpy(d_target, target_hash, 32, cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemset(d_found, 0, sizeof(int)));
+
+        mine_account_hashes<<<blocks, threads_per_block>>>(
+            d_target,
+            required_nibbles,
+            start_nonce,
+            attempts_per_thread,
+            d_result_addr,
+            d_found
+        );
+
+        CUDA_CHECK(cudaGetLastError());
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        int found_flag;
+        CUDA_CHECK(cudaMemcpy(&found_flag, d_found, sizeof(int), cudaMemcpyDeviceToHost));
+
+        if (found_flag) {
+            CUDA_CHECK(cudaMemcpy(result_address, d_result_addr, 20, cudaMemcpyDeviceToHost));
+            *found = true;
+        } else {
+            *found = false;
+        }
+
+        cudaFree(d_target);
+        cudaFree(d_result_addr);
         cudaFree(d_found);
     }
 }

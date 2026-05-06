@@ -3,14 +3,26 @@ fn main() {
     use cc::Build;
 
     println!("cargo:rerun-if-changed=src/keccak_cuda.cu");
+    println!("cargo:rerun-if-changed=src/cuda_glibc_compat.h");
+
+    // CUDA 13.1 + glibc 2.42 (Ubuntu 25.10) compat: rsqrt/rsqrtf get
+    // conflicting exception specs across CUDA's crt/math_functions.h
+    // and glibc's bits/mathcalls.h. Force-include a small shim that
+    // redefines __THROW so the declarations agree.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let compat_header = format!("{manifest_dir}/src/cuda_glibc_compat.h");
 
     // Fat binary: compile for multiple GPU architectures
     // Each GPU gets native code, driver picks the right one at runtime
     Build::new()
         .cuda(true)
         .file("src/keccak_cuda.cu")
-        // Pascal (GTX 1080)
-        .flag("-gencode=arch=compute_61,code=sm_61")
+        .flag("-Xcompiler")
+        .flag("-include")
+        .flag("-Xcompiler")
+        .flag(&compat_header)
+        // Pascal (GTX 1080) — removed: dropped in CUDA 13 toolkit
+        // .flag("-gencode=arch=compute_61,code=sm_61")
         // Turing (RTX 2080)
         .flag("-gencode=arch=compute_75,code=sm_75")
         // Ampere (RTX 3080)

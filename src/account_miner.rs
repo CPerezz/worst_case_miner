@@ -18,6 +18,13 @@ use std::thread;
 use std::time::Instant;
 use tiny_keccak::{Hasher, Keccak};
 
+#[cfg(feature = "cuda")]
+use crate::cuda_miner;
+
+/// Above this many required nibbles the GPU kernel beats the CPU loop.
+/// Below it, kernel-launch overhead dominates and CPU is faster.
+const CUDA_NIBBLE_THRESHOLD: usize = 8;
+
 /// Result structure for CREATE2-based mining
 #[derive(Serialize, Deserialize)]
 pub struct Create2MiningResult {
@@ -41,11 +48,13 @@ pub struct ContractWithAuxiliaries {
 }
 
 /// Main entry point for CREATE2-based account mining
+#[allow(clippy::too_many_arguments)]
 pub fn mine_create2_accounts(
     deployer: [u8; 20],
     num_contracts: usize,
     target_depth: usize,
     num_threads: usize,
+    use_cuda: bool,
     init_code: &[u8],
     deploy_code: &[u8],
     storage_keys: &[[u8; 32]],
@@ -86,7 +95,7 @@ pub fn mine_create2_accounts(
 
         // Mine auxiliary accounts for this contract
         let auxiliaries =
-            mine_auxiliaries_for_contract(&contract_address, target_depth, num_threads);
+            mine_auxiliaries_for_contract(&contract_address, target_depth, num_threads, use_cuda);
 
         contracts.push(ContractWithAuxiliaries {
             salt,
@@ -178,6 +187,7 @@ fn mine_auxiliaries_for_contract(
     contract_address: &[u8; 20],
     target_depth: usize,
     num_threads: usize,
+    use_cuda: bool,
 ) -> Vec<[u8; 20]> {
     let mut auxiliaries = Vec::new();
 
@@ -188,7 +198,8 @@ fn mine_auxiliaries_for_contract(
         debug!("  Mining auxiliary at depth {depth}/{target_depth}");
 
         // Mine an account whose hash shares 'depth' nibbles with the contract hash
-        let auxiliary = mine_account_with_hash_prefix(&contract_hash, depth, num_threads);
+        let auxiliary =
+            mine_account_with_hash_prefix(&contract_hash, depth, num_threads, use_cuda);
 
         debug!(
             "  Found: 0x{} (hash shares {} nibbles)",
@@ -207,7 +218,18 @@ fn mine_account_with_hash_prefix(
     target_hash: &[u8; 32],
     depth: usize,
     num_threads: usize,
+    #[allow(unused_variables)] use_cuda: bool,
 ) -> [u8; 20] {
+    #[cfg(feature = "cuda")]
+    {
+        if use_cuda && depth >= CUDA_NIBBLE_THRESHOLD {
+            if let Some(addr) = cuda_miner::mine_account_hash_with_cuda(target_hash, depth) {
+                return addr;
+            }
+            info!("CUDA account mining returned no match at depth {depth}, falling back to CPU");
+        }
+    }
+
     let result = Arc::new(Mutex::new(None));
     let found = Arc::new(AtomicBool::new(false));
 
