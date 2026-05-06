@@ -17,19 +17,19 @@ contract WorstCaseERC20 {
         totalSupply = 1_000_000_000 * 10 ** 18; // 1 billion tokens
         balanceOf[msg.sender] = totalSupply;
 
-        // Set all mined storage addresses to 1
+        // Set all mined storage keys to 1
         assembly {
-            sstore(0x40ba25ab43e6082776eb25b94d5600905625ff87, 1)
-            sstore(0x8590b076d6f58c618430185abeb5563c549c506d, 1)
-            sstore(0x8ca09fcffcd4817ba633147cef3c568ec360fc3f, 1)
-            sstore(0x624514fa26b457541342e4e98ddad4a519baafa5, 1)
-            sstore(0x1c5cf64000d283973150fb3594b66c89f27e6100, 1)
-            sstore(0x7e41b61c7a862525787957614bbbbda79534fbeb, 1)
-            sstore(0xce530dddcec0b1054252929a09d190d2c8ec3fec, 1)
-            sstore(0x22919d70aaa457ff74356323fcd2881c0fac755e, 1)
-            sstore(0xca7ccb0a8e94fa962df8b06682408f58d75003d9, 1)
-            sstore(0x0a7f33ef2f147cf8cf58cd26dda13574f6659e61, 1)
-            sstore(0x6095ab050cdbe20e107cb3ef0d688df3c69bb47e, 1)
+            sstore(0xcf6e875ee1d81ccfc22f6c16c036eeb571fc7c3252d9493d6bdf129c195367f4, 1)
+            sstore(0x519944d997555aeb30554920a0995386a52d8d1c47bc80fdc601359e617a9551, 1)
+            sstore(0x505e19da53fe2989b5704b397c655df71f27e2f4a36176cd4045030309679cba, 1)
+            sstore(0x50d9d86e91a99978c55a09079f520f18f62e5769e6c8fabed47bbbbe64c1c1aa, 1)
+            sstore(0x50d422c65782bcd9ac8c6ffa846a4822268930698522520e503ea1d250f4a923, 1)
+            sstore(0x50d45ce85383a0a6cb4209ca15b0475f5f8a14fb30f1a32e6b375254c873c199, 1)
+            sstore(0x50d454b8030e195e2d4e262d40d752a997a1efb3f6e354e7d827b81498b85055, 1)
+            sstore(0x50d454580f0a23e1d207180f2a9303280585c02dbae23048c247fe8e8b05239b, 1)
+            sstore(0x50d45454f42d0024f2a83dd0263e7719cd303106ef6e0675b36a6334a0749ccd, 1)
+            sstore(0x50d454540e1c46c424899a5c8a5065b5a654ef55c39395ccadf71ee34ffe27d6, 1)
+            sstore(0x50d45454068830eb9f9e626bd9ef329cc24b396e62d65ce0911fb8d759d3d9ef, 1)
         }
     }
 
@@ -67,14 +67,14 @@ contract WorstCaseERC20 {
     // Attack method - writes to the deepest storage slot
     function attack(uint256 value) external {
         assembly {
-            sstore(0x6095ab050cdbe20e107cb3ef0d688df3c69bb47e, value)
+            sstore(0x50d45454068830eb9f9e626bd9ef329cc24b396e62d65ce0911fb8d759d3d9ef, value)
         }
     }
 
     // Optional: getter to verify the deepest slot value
     function getDeepest() external view returns (uint256 value) {
         assembly {
-            value := sload(0x6095ab050cdbe20e107cb3ef0d688df3c69bb47e)
+            value := sload(0x50d45454068830eb9f9e626bd9ef329cc24b396e62d65ce0911fb8d759d3d9ef)
         }
     }
 }

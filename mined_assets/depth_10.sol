@@ -17,18 +17,18 @@ contract WorstCaseERC20 {
         totalSupply = 1_000_000_000 * 10 ** 18; // 1 billion tokens
         balanceOf[msg.sender] = totalSupply;
 
-        // Set all mined storage slots to 1
+        // Set all mined storage keys to 1
         assembly {
-            sstore(0xc23303a7ec42f89ca5bf674b83a9141500ac18f0, 1)
-            sstore(0xc5f82341cec8f50dcc8cad69423974ca8ada0f20, 1)
-            sstore(0xed37894a02b4d0a25ea01b6e631a3915613f1bb5, 1)
-            sstore(0xbcfbe3c33c48e394b37f4c11e79d7d77bcae2e24, 1)
-            sstore(0xa1e0359fb56f177056221a1207081f04aea9cd79, 1)
-            sstore(0xbeebb5327db7f26d86063a8f5e530faed72b3abc, 1)
-            sstore(0x291133eb5b3f634f88e28ace53113de696bb07e9, 1)
-            sstore(0x491fabf0e5edc6f78440cb9d0c7d33c162fab471, 1)
-            sstore(0x8c78d0234248e4e5daf92d722ad7826b26830ee6, 1)
-            sstore(0x98f699eb65d72e429ecab836545372ac4e3479f6, 1)
+            sstore(0x2f0d0760931190beeb72941883cfad91a464458fe43beb5f084caef9d22aa342, 1)
+            sstore(0x7e2ccba5b0e583ffc5e247fd2e316f3557abcb7d53099a0d0546f163ee019deb, 1)
+            sstore(0x7c37b46d0932bb65a1f0ae0b230bcc8248843e37c2bcba4bd2ab09e159076145, 1)
+            sstore(0x7c85d9bc0fe927ce979d0ecb3fc86c3ced2ba43b5831cd1335f5722b194b1d84, 1)
+            sstore(0x7c87e0b3a4209a6f5f336d5f4a97175ec925deee9d51a5943fc48ae9344bd05d, 1)
+            sstore(0x7c877239ed3a76fbdec569acde22f06749ba6e9f10f04064f43ff2eb274aeb03, 1)
+            sstore(0x7c877518b497b39b8fe96b9eaa3dc372312b3d96c6384e881e72b537f4bc8bd6, 1)
+            sstore(0x7c8775026dcd84023c86108d2fa80f3414cc790b77f46a461b459471687b8501, 1)
+            sstore(0x7c877509dbcb23d80feabcc88b2e85e547e0b98c1631d6c3e08eab7e84464f6f, 1)
+            sstore(0x7c8775092f8d878e47a61dd1c723d51b258c8d1908f3f1d5238607c23b094cb3, 1)
         }
     }
 
@@ -66,14 +66,14 @@ contract WorstCaseERC20 {
     // Attack method - writes to the deepest storage slot
     function attack(uint256 value) external {
         assembly {
-            sstore(0x98f699eb65d72e429ecab836545372ac4e3479f6, value)
+            sstore(0x7c8775092f8d878e47a61dd1c723d51b258c8d1908f3f1d5238607c23b094cb3, value)
         }
     }
 
     // Optional: getter to verify the deepest slot value
     function getDeepest() external view returns (uint256 value) {
         assembly {
-            value := sload(0x98f699eb65d72e429ecab836545372ac4e3479f6)
+            value := sload(0x7c8775092f8d878e47a61dd1c723d51b258c8d1908f3f1d5238607c23b094cb3)
         }
     }
 }
